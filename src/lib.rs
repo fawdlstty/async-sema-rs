@@ -1,6 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-
 use event_listener::Event;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A counter for limiting the number of concurrent operations.
 #[derive(Debug)]
@@ -103,7 +102,7 @@ impl Semaphore {
     /// s.add_permits(1);
     /// assert!(s.try_acquire().is_some());
     /// ```
-    pub fn add_permits(&mut self, n: usize) {
+    pub fn add_permits(&self, n: usize) {
         self.count.fetch_add(n, Ordering::AcqRel);
         self.event.notify(n);
     }
