@@ -1,5 +1,15 @@
+mod utils;
+
+use chrono::NaiveDateTime;
 use event_listener::Event;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::timeout;
+use utils::time_util::NaiveDateTimeExt;
+
+#[cfg(test)]
+mod test;
 
 /// A counter for limiting the number of concurrent operations.
 #[derive(Debug)]
@@ -86,6 +96,36 @@ impl Semaphore {
             match listener.take() {
                 None => listener = Some(self.event.listen()),
                 Some(l) => l.await,
+            }
+        }
+    }
+
+    /// Waits for a permit for a concurrent operation.
+    ///
+    /// Returns a guard that releases the permit when dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_sema::Semaphore;
+    ///
+    /// let s = Semaphore::new(2);
+    /// s.acquire().await;
+    /// ```
+    pub async fn acquire_timeout(&self, dur: Duration) -> bool {
+        let elapsed = Arc::new(AtomicBool::new(false));
+        let elapsed2 = Arc::clone(&elapsed);
+        let fut = async move {
+            self.acquire().await;
+            if elapsed2.load(Ordering::SeqCst) {
+                self.add_permits(1);
+            }
+        };
+        match timeout(dur, fut).await {
+            Ok(_) => true,
+            Err(_) => {
+                elapsed.store(true, Ordering::SeqCst);
+                false
             }
         }
     }
