@@ -1,59 +1,23 @@
-mod utils;
-
-use chrono::NaiveDateTime;
 use event_listener::Event;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::timeout;
-use utils::time_util::NaiveDateTimeExt;
+use tokio::time as tktime;
 
-#[cfg(test)]
-mod test;
-
-/// A counter for limiting the number of concurrent operations.
 #[derive(Debug)]
-pub struct Semaphore {
+pub(crate) struct SemaphoreInner {
     count: AtomicUsize,
     event: Event,
 }
 
-impl Semaphore {
-    /// Creates a new semaphore with a limit of `n` concurrent operations.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use async_semaphore::Semaphore;
-    ///
-    /// let s = Semaphore::new(5);
-    /// ```
-    pub const fn new(n: usize) -> Semaphore {
-        Semaphore {
+impl SemaphoreInner {
+    pub const fn new(n: usize) -> Self {
+        Self {
             count: AtomicUsize::new(n),
             event: Event::new(),
         }
     }
 
-    /// Attempts to get a permit for a concurrent operation.
-    ///
-    /// If the permit could not be acquired at this time, then [`None`] is returned. Otherwise, a
-    /// guard is returned that releases the mutex when dropped.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use async_sema::Semaphore;
-    ///
-    /// let s = Semaphore::new(2);
-    ///
-    /// s.try_acquire().unwrap();
-    /// s.try_acquire().unwrap();
-    ///
-    /// assert!(s.try_acquire().is_none());
-    /// s.add_permits(1);
-    /// assert!(s.try_acquire().is_some());
-    /// ```
     pub fn try_acquire(&self) -> bool {
         let mut count = self.count.load(Ordering::Acquire);
         loop {
@@ -73,18 +37,6 @@ impl Semaphore {
         }
     }
 
-    /// Waits for a permit for a concurrent operation.
-    ///
-    /// Returns a guard that releases the permit when dropped.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use async_sema::Semaphore;
-    ///
-    /// let s = Semaphore::new(2);
-    /// s.acquire().await;
-    /// ```
     pub async fn acquire(&self) {
         let mut listener = None;
 
@@ -100,34 +52,116 @@ impl Semaphore {
         }
     }
 
-    /// Waits for a permit for a concurrent operation.
-    ///
-    /// Returns a guard that releases the permit when dropped.
+    pub async fn acquire_timeout(&self, dur: Duration) -> bool {
+        let processed = Arc::new(AtomicBool::new(false));
+        let processed2 = Arc::clone(&processed);
+        macro_rules! mark_process {
+            ($ela:expr) => {
+                $ela.compare_exchange_weak(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            };
+        }
+        let fut = async move {
+            self.acquire().await;
+            if !mark_process!(processed2) {
+                self.add_permits(1);
+            }
+        };
+        match tktime::timeout(dur, fut).await {
+            Ok(_) => true,
+            Err(_) => !mark_process!(processed),
+        }
+    }
+
+    pub fn add_permits(&self, n: usize) {
+        self.count.fetch_add(n, Ordering::AcqRel);
+        self.event.notify(n);
+    }
+}
+
+/// A counter for limiting the number of concurrent operations.
+#[derive(Debug, Clone)]
+pub struct Semaphore {
+    inner: Arc<SemaphoreInner>,
+}
+
+unsafe impl Send for Semaphore {}
+
+impl Semaphore {
+    /// Creates a new semaphore with a limit of `n` concurrent operations.
     ///
     /// # Examples
     ///
     /// ```
     /// use async_sema::Semaphore;
     ///
+    /// let s = Semaphore::new(5);
+    /// ```
+    pub fn new(n: usize) -> Semaphore {
+        Semaphore {
+            inner: Arc::new(SemaphoreInner::new(n)),
+        }
+    }
+
+    /// Attempts to get a permit for a concurrent operation.
+    ///
+    /// Return whether permit has been acquired
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_sema::Semaphore;
+    ///
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let s = Semaphore::new(2);
+    ///
     /// s.acquire().await;
+    /// s.acquire().await;
+    ///
+    /// assert!(!s.try_acquire());
+    /// s.add_permits(1);
+    /// assert!(s.try_acquire());
+    /// # });
+    /// ```
+    pub fn try_acquire(&self) -> bool {
+        self.inner.try_acquire()
+    }
+
+    /// Waits for a permit for a concurrent operation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_sema::Semaphore;
+    ///
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let s = Semaphore::new(2);
+    ///
+    /// s.acquire().await;
+    /// # });
+    /// ```
+    pub async fn acquire(&self) {
+        self.inner.acquire().await
+    }
+
+    /// Waits for a permit for a concurrent operation.
+    ///
+    /// Return whether permit has been acquired
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_sema::Semaphore;
+    /// use std::time::Duration;
+    ///
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let s = Semaphore::new(2);
+    ///
+    /// s.acquire_timeout(Duration::from_secs(1)).await;
+    /// # });
     /// ```
     pub async fn acquire_timeout(&self, dur: Duration) -> bool {
-        let elapsed = Arc::new(AtomicBool::new(false));
-        let elapsed2 = Arc::clone(&elapsed);
-        let fut = async move {
-            self.acquire().await;
-            if elapsed2.load(Ordering::SeqCst) {
-                self.add_permits(1);
-            }
-        };
-        match timeout(dur, fut).await {
-            Ok(_) => true,
-            Err(_) => {
-                elapsed.store(true, Ordering::SeqCst);
-                false
-            }
-        }
+        self.inner.acquire_timeout(dur).await
     }
 
     /// Add permit for a concurrent operations
@@ -138,12 +172,12 @@ impl Semaphore {
     /// use async_sema::Semaphore;
     ///
     /// let s = Semaphore::new(0);
-    /// assert!(s.try_acquire().is_none());
+    ///
+    /// assert!(!s.try_acquire());
     /// s.add_permits(1);
-    /// assert!(s.try_acquire().is_some());
+    /// assert!(s.try_acquire());
     /// ```
     pub fn add_permits(&self, n: usize) {
-        self.count.fetch_add(n, Ordering::AcqRel);
-        self.event.notify(n);
+        self.inner.add_permits(n)
     }
 }
