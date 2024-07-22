@@ -5,7 +5,11 @@
 
 Async semaphore library
 
-example:
+## Manual
+
+Install: Run `cargo add async-sema` in the project directory
+
+## example
 
 ```rust
 use async_sema::Semaphore;
