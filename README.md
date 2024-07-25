@@ -18,6 +18,9 @@ let s = Semaphore::new(2);
 
 // async acquire
 s.acquire().await;
+s.batch_acquire(1).await;
+
+
 
 // instant acquire
 let a = s.try_acquire().unwrap();

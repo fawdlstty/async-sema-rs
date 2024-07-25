@@ -16,30 +16,36 @@ impl SemaphoreInner {
         }
     }
 
-    pub fn try_acquire(&self) -> bool {
-        let mut count = self.count.load(Ordering::Acquire);
+    pub fn try_acquire(&self, count: usize) -> usize {
+        let mut balance = self.count.load(Ordering::Acquire);
         loop {
-            if count == 0 {
-                return false;
+            if balance == 0 {
+                return 0;
             }
+            let dest = match balance >= count {
+                true => balance - count,
+                false => 0,
+            };
 
             match self.count.compare_exchange_weak(
-                count,
-                count - 1,
+                balance,
+                dest,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => return true,
-                Err(c) => count = c,
+                Ok(_) => return balance - dest,
+                Err(c) => balance = c,
             }
         }
     }
 
-    pub async fn acquire(&self) {
+    pub async fn acquire(&self, count: usize) {
         let mut listener = None;
+        let mut acquired = 0;
 
         loop {
-            if self.try_acquire() {
+            acquired += self.try_acquire(count - acquired);
+            if count == acquired {
                 return;
             }
 
@@ -101,7 +107,7 @@ impl Semaphore {
     /// # });
     /// ```
     pub fn try_acquire(&self) -> bool {
-        self.inner.try_acquire()
+        self.inner.try_acquire(1) > 0
     }
 
     /// Waits for a permit for a concurrent operation.
@@ -118,7 +124,24 @@ impl Semaphore {
     /// # });
     /// ```
     pub async fn acquire(&self) {
-        self.inner.acquire().await
+        self.inner.acquire(1).await
+    }
+
+    /// Waits for multiple permit for a concurrent operation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use async_sema::Semaphore;
+    ///
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let s = Semaphore::new(2);
+    ///
+    /// s.batch_acquire(1).await;
+    /// # });
+    /// ```
+    pub async fn batch_acquire(&self, count: usize) {
+        self.inner.acquire(count).await
     }
 
     /// Add permit for a concurrent operations
