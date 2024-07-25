@@ -1,8 +1,6 @@
 use event_listener::Event;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time as tktime;
 
 #[derive(Debug)]
 pub(crate) struct SemaphoreInner {
@@ -49,27 +47,6 @@ impl SemaphoreInner {
                 None => listener = Some(self.event.listen()),
                 Some(l) => l.await,
             }
-        }
-    }
-
-    pub async fn acquire_timeout(&self, dur: Duration) -> bool {
-        let processed = Arc::new(AtomicBool::new(false));
-        let processed2 = Arc::clone(&processed);
-        macro_rules! mark_process {
-            ($ela:expr) => {
-                $ela.compare_exchange_weak(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            };
-        }
-        let fut = async move {
-            self.acquire().await;
-            if !mark_process!(processed2) {
-                self.add_permits(1);
-            }
-        };
-        match tktime::timeout(dur, fut).await {
-            Ok(_) => true,
-            Err(_) => !mark_process!(processed),
         }
     }
 
@@ -142,26 +119,6 @@ impl Semaphore {
     /// ```
     pub async fn acquire(&self) {
         self.inner.acquire().await
-    }
-
-    /// Waits for a permit for a concurrent operation.
-    ///
-    /// Return whether permit has been acquired
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use async_sema::Semaphore;
-    /// use std::time::Duration;
-    ///
-    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// let s = Semaphore::new(2);
-    ///
-    /// s.acquire_timeout(Duration::from_secs(1)).await;
-    /// # });
-    /// ```
-    pub async fn acquire_timeout(&self, dur: Duration) -> bool {
-        self.inner.acquire_timeout(dur).await
     }
 
     /// Add permit for a concurrent operations
